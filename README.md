@@ -107,6 +107,10 @@ OpenAI's JSON mode guarantees the model output is valid JSON. Without this, the 
 
 `get_feedback` uses a small in-memory **LRU cache** keyed by a hash of `(PROMPT_VERSION, model name, sentence, target_language, native_language)`, capped by `FEEDBACK_CACHE_MAX_ITEMS` (default 1024). This avoids paying for the same LLM call twice, cuts latency for repeated sentences to a simple memory lookup, and makes it straightforward to plug in a shared Redis cache later using the same key/value shape.
 
+**Manual verification (Docker)**: sending the exact same `/feedback` request twice shows a large latency drop on the second call (first call hits OpenAI; second call is served from the in-memory LRU cache):
+
+![LRU cache verification via repeated request timing](examples/LRU_caching_example.png)
+
 ## Prompt Strategy
 
 The prompt went through several iterations to fix specific failure modes discovered during testing.
@@ -115,7 +119,7 @@ The prompt went through several iterations to fix specific failure modes discove
 
 The default starter prompt told the model to "explain the error in the learner's NATIVE language." This worked when `native_language` was a distinctive language like Nepali, but **consistently failed when `native_language` was English**. The model would write explanations in the target language (Spanish, French, Nepali) instead of English.
 
-This is documented in detail in [BUG_REPORT.md](BUG_REPORT.md) with five reproducible test cases.
+**Reviewer note**: Please start with [BUG_REPORT.md](BUG_REPORT.md) — it contains the full reproduction steps, screenshots, and root-cause analysis for the cross-lingual drift bug.
 
 The root cause: the system prompt itself is in English, so the model doesn't register "write in English" as a language switch. English is its default cognitive state — there's no contrast signal. The target language's contextual gravity (the sentence, corrections, and grammar concepts are all in that language) overpowers the weak instruction.
 
@@ -181,6 +185,8 @@ Note: some “incorrect” learner sentences in these tests may still translate 
 
 These hit the real OpenAI API and verify the prompt produces correct, well-structured output.
 
+Because they depend on LLM behavior, a small amount of flakiness is expected: in particular, the Portuguese mixed-errors test can occasionally return only one `error_type` when the model chooses to group multiple issues together. In those rare runs, rerunning the test usually produces the expected two distinct error types.
+
 | # | Test | Language | What it checks |
 |---|---|---|---|
 | 1 | Spanish conjugation error | Spanish | Errors detected, valid schema |
@@ -223,6 +229,8 @@ examples/
   sample_inputs.json     5 example input/output pairs
 test_scenarios/
   bug_report_*.png       Screenshots documenting the cross-lingual drift bug
+API_usuage/
+  *.png                  OpenAI usage screenshots 
 Dockerfile               Python 3.11 slim image
 docker-compose.yml       Single service (feedback-api) on port 8000
 BUG_REPORT.md            Detailed analysis of the cross-lingual drift bug
@@ -230,11 +238,11 @@ BUG_REPORT.md            Detailed analysis of the cross-lingual drift bug
 
 ## API Usage During Development
 
-Over the course of building and optimizing the prompt, I made **57 real API requests** to `gpt-4o-mini`, consuming **30,776 tokens** total. This covers prompt iteration, bug reproduction, cross-lingual drift testing, and integration test runs.
+Over the course of building and optimizing the prompt, I made **140 real API requests** to `gpt-4o-mini`, consuming **104,355 tokens** total. This covers prompt iteration, bug reproduction, cross-lingual drift testing, and integration test runs.
 
 ### Totals
 
-Total API cost for development/optimization was **$0.01**.
+Total API cost for development/optimization was **$0.03**.
 
 ![Total tokens and requests](API_usuage/total_tokens_and_requests.png)
 
@@ -248,8 +256,8 @@ Total API cost for development/optimization was **$0.01**.
 
 ### March 18, 2026 -- verification and final testing
 
-- **10 requests** — final integration test runs after prompt fix, edge-case verification.
-- **9,883 tokens** (8,862 input + 1,021 output)
+- **93 requests** — final integration test runs after prompt fix, edge-case verification.
+- **92,555 tokens** (82,441 input + 10,114 output)
 
 ![March 18 requests](API_usuage/march_18_requests.png)
 ![March 18 tokens](API_usuage/march_18_tokens.png)
@@ -262,3 +270,11 @@ I don't speak most of the languages this API handles. To verify accuracy for lan
 2. Used back-translation (feeding the corrected sentence into a translator and checking if the meaning is preserved)
 3. Tested with intentionally obvious errors (wrong word order, missing prepositions, duplicated words) where the expected correction is unambiguous even without fluency
 4. Verified the integration tests produce structurally valid responses across all 7 tested languages
+
+## Recommended Review Path
+
+If you're reviewing this project, I recommend:
+
+1. Start with `BUG_REPORT.md` to see the original cross-lingual drift bug, reproduction steps, and analysis.
+2. Then read the **Prompt Strategy** and **Caching for production feasibility** sections above to understand the design decisions.
+3. Finally, run the tests (`pytest tests/test_feedback_unit.py tests/test_schema.py -v` and `pytest tests/test_feedback_integration.py -v`) and, if desired, hit `/feedback` in Docker to see real responses and LRU caching behavior.

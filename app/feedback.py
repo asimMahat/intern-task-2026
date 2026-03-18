@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 from collections import OrderedDict
 from typing import Optional
@@ -9,6 +10,8 @@ from typing import Optional
 from openai import AsyncOpenAI
 
 from app.models import FeedbackRequest, FeedbackResponse
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 You are a language-learning feedback engine.
@@ -137,8 +140,10 @@ async def get_feedback(request: FeedbackRequest) -> FeedbackResponse:
 
     cached = _cache_get(key)
     if cached is not None:
+        logger.info("feedback_cache_hit key_prefix=%s", key[:8])
         return FeedbackResponse(**cached)
 
+    logger.info("feedback_cache_miss key_prefix=%s", key[:8])
     client = AsyncOpenAI()
 
     user_message = (
