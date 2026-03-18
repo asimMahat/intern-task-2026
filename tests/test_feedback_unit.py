@@ -95,27 +95,27 @@ async def test_correct_german_sentence():
 @pytest.mark.asyncio
 async def test_french_multiple_gender_errors():
     mock_response = {
-        "corrected_sentence": "Le chat noir est sur la table.",
+        "corrected_sentence": "Le chien blanc est dans la maison.",
         "is_correct": False,
         "errors": [
             {
-                "original": "La chat",
-                "correction": "Le chat",
+                "original": "La chien",
+                "correction": "Le chien",
                 "error_type": "gender_agreement",
-                "explanation": "'Chat' is masculine in French.",
+                "explanation": "'Chien' is masculine, so it takes the article 'le', not 'la'.",
             },
             {
-                "original": "le table",
-                "correction": "la table",
+                "original": "le maison",
+                "correction": "la maison",
                 "error_type": "gender_agreement",
-                "explanation": "'Table' is feminine in French.",
+                "explanation": "'Maison' is feminine, so it takes the article 'la', not 'le'.",
             },
         ],
         "difficulty": "A1",
     }
 
     result = await _run_mocked_feedback(
-        mock_response, "La chat noir est sur le table.", "French", "English"
+        mock_response, "La chien blanc est dans le maison.", "French", "English"
     )
 
     assert result.is_correct is False
@@ -292,3 +292,59 @@ async def test_explanation_field_preserved():
 
     assert len(result.errors) == 1
     assert result.errors[0].explanation == expected_explanation
+
+
+# ---------------------------------------------------------------------------
+# 10. Arabic (MSA) conjugation error -- non-Latin script
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_arabic_conjugation_error():
+    mock_response = {
+        "corrected_sentence": "أنا أذهب إلى المدرسة كل يوم.",
+        "is_correct": False,
+        "errors": [
+            {
+                "original": "يذهب",
+                "correction": "أذهب",
+                "error_type": "conjugation",
+                "explanation": "'يذهب' is the third-person form. With 'أنا' (I), use the first-person form 'أذهب'.",
+            }
+        ],
+        "difficulty": "A2",
+    }
+
+    result = await _run_mocked_feedback(
+        mock_response, "أنا يذهب إلى المدرسة كل يوم.", "Arabic", "English"
+    )
+
+    assert result.is_correct is False
+    assert len(result.errors) == 1
+    assert result.errors[0].error_type == "conjugation"
+
+
+# ---------------------------------------------------------------------------
+# 11. Bengali grammar error -- non-Latin script
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_bengali_grammar_error():
+    mock_response = {
+        "corrected_sentence": "আমি প্রতিদিন স্কুলে যাই।",
+        "is_correct": False,
+        "errors": [
+            {
+                "original": "যায়",
+                "correction": "যাই",
+                "error_type": "conjugation",
+                "explanation": "'যায়' is the third-person form of 'to go'. With 'আমি' (I), use 'যাই'.",
+            }
+        ],
+        "difficulty": "A1",
+    }
+
+    result = await _run_mocked_feedback(
+        mock_response, "আমি প্রতিদিন স্কুলে যায়।", "Bengali", "English"
+    )
+
+    assert result.is_correct is False
+    assert len(result.errors) == 1
+    assert result.errors[0].error_type == "conjugation"

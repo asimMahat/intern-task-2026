@@ -193,3 +193,33 @@ async def test_explanation_language_english():
         assert has_ascii, (
             f"Explanation appears to not be in English: {error.explanation!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 10. Arabic (MSA) conjugation error -- non-Latin script
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_arabic_conjugation_error():
+    result = await get_feedback(
+        FeedbackRequest(
+            sentence="أنا يذهب إلى المدرسة كل يوم.",
+            target_language="Arabic",
+            native_language="English",
+        )
+    )
+    _assert_valid_response(result, expect_correct=False)
+
+
+# ---------------------------------------------------------------------------
+# 11. Bengali grammar error -- non-Latin script
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_bengali_grammar_error():
+    result = await get_feedback(
+        FeedbackRequest(
+            sentence="আমি প্রতিদিন স্কুলে যায়।",
+            target_language="Bengali",
+            native_language="English",
+        )
+    )
+    _assert_valid_response(result, expect_correct=False)
