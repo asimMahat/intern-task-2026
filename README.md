@@ -105,19 +105,7 @@ OpenAI's JSON mode guarantees the model output is valid JSON. Without this, the 
 
 ### Caching for production feasibility
 
-To keep costs low and latency predictable at scale, `get_feedback` in `app/feedback.py` now uses a simple in-memory **LRU (least recently used) cache**:
-
-- **What is cached**: the full `/feedback` response, keyed by a hash of `(PROMPT_VERSION, model name, sentence, target_language, native_language)`. Changing the prompt or model automatically invalidates old entries.
-- **How it works**: before calling OpenAI, the function looks up the key in an `OrderedDict` LRU. On a hit, it returns the cached JSON immediately; on a miss, it calls the model once and stores the parsed response in the cache.
-- **Eviction**: the cache holds up to `FEEDBACK_CACHE_MAX_ITEMS` entries (default 1024). When it exceeds this, the least recently used entry is evicted.
-- **Test isolation**: unit tests clear the cache between tests so mocked responses never leak across test cases.
-
-This design improves **production feasibility** because:
-
-- **Cost**: repeated or common sentences (e.g., classroom prompts, practice drills) only pay for one LLM call; all later requests are served from memory.
-- **Latency**: cache hits are served in milliseconds, which helps keep p95/p99 latencies well below the 30-second scoring cutoff.
-- **Throughput**: by offloading repeated work to the cache, the same infrastructure can handle more concurrent learners before hitting OpenAI rate limits.
-- **Compatibility with Redis**: because the cache key is a single SHA-256 string and the value is JSON, it can be extended to a shared Redis cache (for multiple app instances) without changing the public API.
+`get_feedback` uses a small in-memory **LRU cache** keyed by a hash of `(PROMPT_VERSION, model name, sentence, target_language, native_language)`, capped by `FEEDBACK_CACHE_MAX_ITEMS` (default 1024). This avoids paying for the same LLM call twice, cuts latency for repeated sentences to a simple memory lookup, and makes it straightforward to plug in a shared Redis cache later using the same key/value shape.
 
 ## Prompt Strategy
 
@@ -141,11 +129,15 @@ The original integration tests (`tests/test_feedback_integration.py`) only asser
    > "if the native language is English, write the explanation in English. If the native language is Spanish, write it in Spanish."
 
 2. **Few-shot examples** baked into the system prompt showing English-native-language scenarios with explanations written in English. Models follow demonstrated patterns more reliably than abstract rules.
+   
+   ![Few-shot examples inside system prompt](examples/few_shot_example.png)
 
 3. **Per-request reinforcement** in the user message:
    > `IMPORTANT: All explanations MUST be written in {native_language}.`
    
    This injects the actual language name into every request, right before the model generates. It's the single most effective fix because the model reads it last and it names the specific language rather than referencing a field.
+   
+   ![User message updated to reinforce native-language explanations](examples/user_message_update.png)
 
 ### Result: explanations now in English
 
@@ -159,20 +151,17 @@ After applying the three-layer fix, both previously failing cases now return exp
 
 ![Resolved: Nepali target with English explanations](resolved_bug_scenarios/resolved_2.png)
 
-### Other prompt design choices
-
-- **`original` must be an exact substring**: Without this rule, the model often set `original` to the entire input sentence for every error, giving the learner no granularity about what specifically was wrong.
-- **Minimal correction**: The prompt emphasizes preserving the learner's meaning and style. Over-correcting (rewriting the whole sentence) is unhelpful for learning.
-- **CEFR based on complexity, not errors**: Without this explicit instruction, the model tends to rate sentences with many errors as "simple" (A1), confusing error count with difficulty. A complex B2-level sentence with errors is still B2.
-- **Allowed error types as an explicit enum**: Prevents the model from inventing categories like `"verb_tense"` or `"article"` that don't match the response schema.
+The prompt also explicitly encourages **minimal correction**: it asks the model to preserve the learner's meaning and style, instead of rewriting the whole sentence. This makes the feedback more useful for learning because learners can see precisely what changed and why.
 
 ## Test Suite
 
-The test suite has 9 unit tests, 9 integration tests, and 9 schema tests covering 5 languages, 7 error types, and multiple edge cases.
+The unit tests (11) and integration tests (11) were redesigned to cover 7 languages (including non-Latin scripts), 7 error types, and multiple edge cases. The 9 schema tests remain unchanged from the original project.
 
 ### Unit tests (`tests/test_feedback_unit.py`) -- no API key needed
 
 These mock the OpenAI client and verify the parsing pipeline works correctly.
+
+Note: some “incorrect” learner sentences in these tests may still translate “correctly” in tools like Google Translate (including Spanish and Portuguese examples). Translation is meaning-focused and often normalizes grammar and word order; these tests are about producing learner-friendly correction feedback, not whether a translator can infer the intended meaning.
 
 | # | Test | Language | Error type | Edge case |
 |---|---|---|---|---|
@@ -185,6 +174,8 @@ These mock the OpenAI client and verify the parsing pipeline works correctly.
 | 7 | German extra word | German | `extra_word` | -- |
 | 8 | Correct Spanish sentence | Spanish | -- | Second correct sentence |
 | 9 | Explanation field preserved | Spanish | `conjugation` | Explanation text survives parsing |
+| 10 | Arabic conjugation error | Arabic (MSA) | `conjugation` | Non-Latin script |
+| 11 | Bengali grammar error | Bengali | `conjugation` | Non-Latin script |
 
 ### Integration tests (`tests/test_feedback_integration.py`) -- requires API key
 
@@ -201,6 +192,8 @@ These hit the real OpenAI API and verify the prompt produces correct, well-struc
 | 7 | German extra word | German | Errors detected |
 | 8 | Correct Spanish sentence | Spanish | `is_correct=true`, sentence unchanged |
 | 9 | Explanation language regression | Spanish | Explanations are in English, not Spanish (cross-lingual drift fix) |
+| 10 | Arabic conjugation error | Arabic (MSA) | Errors detected, non-Latin script |
+| 11 | Bengali grammar error | Bengali | Errors detected, non-Latin script |
 
 ### Schema tests (`tests/test_schema.py`) -- no API key needed
 
@@ -208,9 +201,9 @@ Validates that request/response payloads conform to the JSON schemas in `schema/
 
 ### Coverage summary
 
-- **Languages**: Spanish, German, French, Portuguese, Italian (5 languages)
+- **Languages**: Spanish, German, French, Portuguese, Italian, Arabic (MSA), Bengali (7 languages)
 - **Error types**: `conjugation`, `gender_agreement`, `spelling`, `grammar`, `word_order`, `missing_word`, `extra_word` (7 types)
-- **Edge cases**: correct sentences (2), multiple errors same type (1), multiple errors different types (1), explanation language regression (1)
+- **Edge cases**: correct sentences (2), multiple errors same type (1), multiple errors different types (1), explanation language regression (1), non-Latin scripts (2)
 
 ## Project Structure
 
@@ -223,8 +216,8 @@ schema/
   request.schema.json    JSON Schema for request validation
   response.schema.json   JSON Schema for response validation
 tests/
-  test_feedback_unit.py         9 unit tests with mocked LLM responses
-  test_feedback_integration.py  9 integration tests with real API calls
+  test_feedback_unit.py         11 unit tests with mocked LLM responses
+  test_feedback_integration.py  11 integration tests with real API calls
   test_schema.py                9 schema validation tests
 examples/
   sample_inputs.json     5 example input/output pairs
@@ -235,6 +228,32 @@ docker-compose.yml       Single service (feedback-api) on port 8000
 BUG_REPORT.md            Detailed analysis of the cross-lingual drift bug
 ```
 
+## API Usage During Development
+
+Over the course of building and optimizing the prompt, I made **57 real API requests** to `gpt-4o-mini`, consuming **30,776 tokens** total. This covers prompt iteration, bug reproduction, cross-lingual drift testing, and integration test runs.
+
+### Totals
+
+Total API cost for development/optimization was **$0.01**.
+
+![Total tokens and requests](API_usuage/total_tokens_and_requests.png)
+
+### March 17, 2026 -- bulk of development
+
+- **47 requests** — prompt engineering, bug discovery, cross-lingual drift reproduction across multiple language pairs, and initial integration test runs.
+- **27,968 tokens** (21,914 input + 6,054 output)
+
+![March 17 requests](API_usuage/march_17_requests.png)
+![March 17 tokens](API_usuage/march_17_tokens.png)
+
+### March 18, 2026 -- verification and final testing
+
+- **10 requests** — final integration test runs after prompt fix, edge-case verification.
+- **9,883 tokens** (8,862 input + 1,021 output)
+
+![March 18 requests](API_usuage/march_18_requests.png)
+![March 18 tokens](API_usuage/march_18_tokens.png)
+
 ## Verifying Accuracy for Unknown Languages
 
 I don't speak most of the languages this API handles. To verify accuracy for languages I don't know, I:
@@ -242,14 +261,4 @@ I don't speak most of the languages this API handles. To verify accuracy for lan
 1. Cross-checked the model's corrections against known example pairs in `examples/sample_inputs.json`
 2. Used back-translation (feeding the corrected sentence into a translator and checking if the meaning is preserved)
 3. Tested with intentionally obvious errors (wrong word order, missing prepositions, duplicated words) where the expected correction is unambiguous even without fluency
-4. Verified the integration tests produce structurally valid responses across all 5 tested languages
-
-For a production system, I would add automated accuracy checks using a second LLM as a judge, or build a human-reviewed test corpus for each supported language.
-
-## What I Would Improve With More Time
-
-- **Distributed caching**: The current in-memory LRU cache is per-process. In a multi-instance deployment I would add a small Redis layer in front of the LRU to share cached feedback across replicas and survive restarts.
-- **Retry logic**: If the LLM returns malformed JSON or times out, the API should retry once before failing. Currently a single bad response returns a 500.
-- **Language detection validation**: Use a lightweight library like `langdetect` to verify that explanations are actually in the requested native language, and retry if not.
-- **Streaming**: For longer sentences, stream the response to reduce perceived latency.
-- **Rate limiting**: Protect against abuse in a production deployment.
+4. Verified the integration tests produce structurally valid responses across all 7 tested languages
